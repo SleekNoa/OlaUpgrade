@@ -1,0 +1,8 @@
+mcp>=1.0.0
+ollama>=0.4.0
+openai>=1.30.0
+fastapi>=0.111.0
+uvicorn>=0.30.0
+pydantic>=2.6.0
+httpx>=0.27.0
+python-dotenv>=1.0.1

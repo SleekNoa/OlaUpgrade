@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ola-upgrade"
+version = "0.1.0"
+description = "OLA Agent with MCP tools"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+# List your top-level packages/folders here
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["provider*", "mcp-server*"]
+exclude = ["tests*", "venv*", "__pycache__*"]
+
+[tool.setuptools]
+zip-safe = false
