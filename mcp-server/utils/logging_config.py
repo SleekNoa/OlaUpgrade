@@ -1,35 +1,29 @@
-# utils/logging_config.py
+# mcp-server/utils/logging_config.py
+"""Shared logging setup for the MCP subprocess and related components."""
+
 import logging
 import sys
 
 
 def configure_logging(level: int = logging.INFO) -> None:
     """
-    Configure global logging for the application.
+    Configure root logging once.
 
-    - Consistent format across MCP server, API, and agents
-    - Outputs to stdout (important for MCP subprocess visibility)
-    - Prevents duplicate handlers
+    stderr is intentional here: MCP uses stdout for JSON-RPC messages.
     """
-
-    root_logger = logging.getLogger()
-
-    # Prevent duplicate logs if configure_logging() is called multiple times
-    if root_logger.handlers:
+    root = logging.getLogger()
+    if root.handlers:
         return
 
     handler = logging.StreamHandler(sys.stderr)
-
-    formatter = logging.Formatter(
+    handler.setFormatter(logging.Formatter(
         fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%H:%M:%S",
-    )
+    ))
+    root.addHandler(handler)
+    root.setLevel(level)
 
-    handler.setFormatter(formatter)
-    root_logger.addHandler(handler)
-    root_logger.setLevel(level)
-
-    # Optional: reduce noise from libraries
+    # Reduce noisy third-party logs so tool traces stay readable.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("uvicorn").setLevel(logging.INFO)
     logging.getLogger("asyncio").setLevel(logging.WARNING)

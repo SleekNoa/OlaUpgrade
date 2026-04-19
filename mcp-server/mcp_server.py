@@ -1,127 +1,58 @@
 # mcp-server/mcp_server.py
-r"""
-MCP Server (Model Context Protocol)
-====================================
-This is the tool execution layer. It exposes functions that LLMs can call.
+"""
+MCP tool server for the OLA agent.
 
-We use FastMCP because it provides a clean, standard way to define tools
-that can be discovered and called via stdio JSON-RPC.
-
-Key benefits:
-- Tools are defined with normal Python type hints
-- FastMCP automatically generates proper JSON schemas
-- Runs as a separate process (good isolation)
+Important stdio rule:
+- MCP responses travel over stdout as JSON-RPC.
+- Any accidental print output from this process can corrupt that stream.
+- Logging is configured to write to stderr instead.
 """
 
+import logging
+import sys
+from pathlib import Path
+from typing import List, Optional
 
+# Make project root importable so sibling packages like providers/ resolve.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
-import sys
-import logging
-from typing import List, Optional
 from providers.openmeteo import get_weather as openmeteo_get_weather
 from utils.logging_config import configure_logging
 
 configure_logging()
 log = logging.getLogger("mcp-server")
-
-# Initialize the MCP server
-mcp = FastMCP(name="ola-minimal-tools")
-
-
-# ===== Input Schemas (for type safety and auto-generated tool descriptions) =====
-class WeatherArgs(BaseModel):
-    """Input schema for get_weather tool."""
-    city: str = Field(...,
-                      description="City name with optional state/country",
-                      examples=["Marion, IA", "Austin, TX", "Paris"]
-    )
+mcp = FastMCP(name="ola-tools")
 
 
 class Agent(BaseModel):
-    """Represents one agent/resource that can be assigned tasks."""
-    id: str = Field(...,
-                    description="Unique identifier for the agent",
-                    examples=["A1", "db-specialist", "Alice"]
-    )
-    skills: List[str] = Field(
-        default_factory=list,
-        description="List of skills this agent has",
-        examples=[["db"], ["network", "security"]]
-    )
-    capacity: int = Field(
-        default=1,
-        ge=1,
-        description="Maximum number of tasks this agent can handle simultaneously",
-        examples=[1, 2, 5]
-    )
+    """One worker/resource available for assignment."""
+    id: str
+    skills: List[str] = Field(default_factory=list)
+    capacity: int = Field(default=1, ge=1)
+
 
 class Task(BaseModel):
-    """Represents a single task that needs to be assigned."""
-    id: str = Field(
-        ...,
-        description="Unique identifier for the task",
-        examples=["T1", "backend-setup", "report-generation"]
-    )
-    required_skill: Optional[str] = Field(
-        default=None,
-        description="Specific skill required for this task. If None, any agent can take it.",
-        examples=["db", "network", None]
-    )
-    effort: int = Field(
-        default=1,
-        ge=1,
-        description="Effort level or estimated workload units for this task",
-        examples=[1, 2, 3]
-    )
+    """One unit of work to allocate."""
+    id: str
+    required_skill: Optional[str] = None
+    effort: int = Field(default=1, ge=1)
+
 
 class Constraints(BaseModel):
-    """Global constraints for the task allocation."""
-    max_tasks_per_agent: Optional[int] = Field(
-        default=None,
-        ge=1,
-        description="Optional hard limit on tasks per agent (overrides individual capacity if stricter)",
-        examples=[None, 3, 5]
-    )
+    """Optional global allocation constraints."""
+    max_tasks_per_agent: Optional[int] = Field(default=None, ge=1)
 
-class AllocateArgs(BaseModel):
-    """Input schema for allocate_tasks tool."""
-    agents: List[Agent] = Field(
-        ...,
-        description="List of available agents",
-        min_length=1
-    )
-    tasks: List[Task] = Field(
-        ...,
-        description="List of tasks to be allocated",
-        min_length=1
-    )
-    constraints: Optional[Constraints] = Field(
-        default=None,
-        description="Optional global constraints for allocation"
-    )
 
-# ===== Tools - CORRECT FastMCP syntax =====
-@mcp.tool()                    # Note: Use @mcp.tool() with type hints only. Do NOT use schema= argument.
+@mcp.tool()
 def get_weather(city: str) -> dict:
-    """
-    Get current weather for a city using Open-Meteo API.
-
-    This tool is exposed to the LLM via MCP. The LLM will call it when
-    it needs weather information.
-    """
-    log.info(f"get_weather called with city={city!r}")
-
+    """Get current weather for a city. Returns temp_c, conditions, provider."""
+    log.info("get_weather(%r)", city)
     res = openmeteo_get_weather(city.strip())
     if not res:
-        raise RuntimeError(f"Weather fetch failed for city: '{city}'")
-
-    return {
-        "temp_c": res.temp_c,
-        "conditions": res.conditions,
-        "provider": res.provider
-    }
+        raise RuntimeError(f"Weather fetch failed for '{city}'")
+    return {"temp_c": res.temp_c, "conditions": res.conditions, "provider": res.provider}
 
 
 @mcp.tool()
@@ -131,40 +62,33 @@ def allocate_tasks(
     constraints: dict | None = None,
 ) -> dict:
     """
-    Allocate tasks to agents based on skills, capacity, and constraints.
+    Allocate tasks to agents using a simple least-loaded strategy.
 
-    This is a classic resource allocation problem. The LLM can call this
-    when the user asks to assign work to team members.
+    Rules:
+    - Respect required_skill when present
+    - Respect per-agent capacity
+    - Respect max_tasks_per_agent when provided
     """
-    log.info("allocate_tasks called")
-
-    # Parse raw dicts into proper Pydantic models for safety
-
+    log.info("allocate_tasks()")
     parsed_agents = [Agent(**a) for a in agents]
     parsed_tasks = [Task(**t) for t in tasks]
     con = Constraints(**(constraints or {}))
-
-    # Tracking structures
 
     load = {a.id: 0 for a in parsed_agents}
     skills_map = {a.id: set(a.skills) for a in parsed_agents}
     cap_map = {a.id: a.capacity for a in parsed_agents}
 
-    def eligible(aid: str, skill: str | None) -> bool:
-        """Check if an agent can take a task."""
+    def eligible(aid: str, skill: Optional[str]) -> bool:
         if skill and skill not in skills_map[aid]:
             return False
         limit = con.max_tasks_per_agent
-        return (load[aid] < cap_map[aid] and
-                (limit is None or load[aid] < limit))
+        return load[aid] < cap_map[aid] and (limit is None or load[aid] < limit)
 
-    assignments = []
-    unassigned = []
-
+    assignments, unassigned = [], []
     for t in parsed_tasks:
         candidates = sorted(
             [a.id for a in parsed_agents if eligible(a.id, t.required_skill)],
-            key = lambda aid: load[aid],
+            key=lambda aid: load[aid],
         )
         if candidates:
             chosen = candidates[0]
@@ -173,13 +97,9 @@ def allocate_tasks(
         else:
             unassigned.append(t.id)
 
-    return  {"assignments": assignments,
-             "unassigned": unassigned
-    }
+    return {"assignments": assignments, "unassigned": unassigned}
+
 
 if __name__ == "__main__":
-    # Run the MCP server over stdio (this is how the client connects)
-    mcp.run()   # pure stdio JSON-RPC
-
-
-
+    # FastMCP serves over stdio here so the client can attach as a subprocess.
+    mcp.run()

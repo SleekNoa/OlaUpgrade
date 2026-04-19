@@ -1,14 +1,12 @@
 # agent/base_agent.py
 """
-BaseAgent - Implements the Tool Calling Loop
-======================================================================
-This is the heart of the agent.
+Base agent implementation for the tool-calling loop.
 
-It follows the standard modern tool-calling pattern:
-1. Send user message + tool schemas to LLM
-2. If LLM returns tool_calls → execute them via MCP
-3. Inject results back as "tool" role messages
-4. Repeat until LLM gives a final text answer
+Loop shape:
+1. Ask the LLM for the next step.
+2. If it returns tool calls, execute them through MCP.
+3. Inject the observations back into history.
+4. Ask for the final plain-English answer.
 """
 
 import json
@@ -16,86 +14,81 @@ from llm.base import BaseLLM
 from llm.factory import create_llm
 from tools.mcp_client import MCPClient
 
-class BaseAgent:
-    """
-    CCA-style single agent:
-    1. Fetches Ollama tool schemas from MCP.
-    2. Calls LLM with schemas injected.
-    3. If LLM emits tool_calls → dispatch via MCP → inject observation.
-    4. Loop until text answer or max_steps reached.
-    """
 
+class BaseAgent:
     def __init__(
-            self,
-            name: str,
-            mcp: MCPClient,
-            system_prompt: str = "",
-            provider: str | None = None,
-            model: str | None = None,
-            max_steps: int = 6,
-            allowed_tools: list[str] | None = None,
+        self,
+        name: str,
+        mcp: MCPClient,
+        system_prompt: str = "",
+        provider: str | None = None,
+        model: str | None = None,
+        max_steps: int = 6,
+        allowed_tools: list[str] | None = None,
     ):
         self.name = name
         self.mcp = mcp
         self.max_steps = max_steps
         self.allowed_tools = allowed_tools
-        # Each agent owns its own LLM instance (own history, own system prompt)
         self.llm: BaseLLM = create_llm(provider, model, system_prompt)
 
     async def _get_tools(self) -> list[dict]:
-        all_tools = await self.mcp.ollama_tool_schemas()
         if self.allowed_tools == []:
             return []
+        all_tools = await self.mcp.ollama_tool_schemas()
         if self.allowed_tools is None:
             return all_tools
         return [t for t in all_tools if t["function"]["name"] in self.allowed_tools]
 
-    def _parse_args(self, raw: dict | str) -> dict:
-        """Normalise tool arguments - OpenAI returns JSON string, Ollama returns dict."""
-        if isinstance(raw, str):
-            return json.loads(raw)
-        return raw or {}
+    @staticmethod
+    def _is_fake_tool_call(msg: dict) -> bool:
+        """Catch models that emit tool JSON as plain text instead of real tool_calls."""
+        content = msg.get("content") or ""
+        return (
+            '"type":"function"' in content.replace(" ", "") or
+            "<|tool_call|>" in content or
+            "<|/tool_call|>" in content
+        )
 
     async def run(self, user_input: str) -> str:
-        """Run the full agent loop until we get a final answer."""
         self.llm.reset()
         tools = await self._get_tools()
-
         msg = self.llm.chat(user_input, tools=tools or None)
 
-        for step in range(self.max_steps):
+        for _ in range(self.max_steps):
+            if self._is_fake_tool_call(msg):
+                print(f"  [{self.name}] Fake tool call detected, asking for plain answer")
+                msg = self.llm.chat(
+                    "Please answer the question directly in plain text. Do not output JSON or code.",
+                    tools=None,
+                )
+                break
+
             tool_calls = msg.get("tool_calls")
-
             if not tool_calls:
-                break  # Final answer from LLM
+                break
 
-            # Execute ALL tool calls first
             for tc in tool_calls:
                 name = tc["function"]["name"]
-                args = self._parse_args(tc["function"].get("arguments", {}))
+                args = tc["function"].get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
 
-                print(f"  [{self.name}] <-> {name}({args})")
-
+                print(f"  [{self.name}] {name}({args})")
                 observation = await self.mcp.call_tool(name, args)
-
-                print(f"  [{self.name}] <0> {observation}")
-
+                print(f"  [{self.name}] {observation}")
                 self.llm.inject_tool_result(name, observation)
 
-            # THEN call LLM again (once per step)
+            # After tools run, prompt for a natural-language answer instead of raw JSON.
             msg = self.llm.chat(
-                "Based on the tool results above, give your final answer.",
+                "Based on the tool results above, give your final answer in plain English.",
                 tools=tools or None,
             )
 
-        # Safe return
-        content = msg.get("content")
-
-        if not content:
-            print(f"{self.name} returned empty content")
-            return ""
-
-      # return content.strip()
+      # return (msg.get("content") or "").strip()
         final = (msg.get("content") or "").strip()
 
         print(f"  [{self.name}] FINAL MSG:", msg)
