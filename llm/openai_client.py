@@ -1,4 +1,16 @@
 # llm/openai_client.py
+"""
+OpenAI LLM Client - Stateful with Native Tool Calling
+=====================================================
+This is the core LLM interface for OpenAI (and OpenAI-compatible endpoints).
+
+Important improvements over naive implementations:
+- Maintains conversation history (critical for multi-turn + tool use)
+- Uses native `tools=` parameter → OpenAI returns `tool_calls` field in the message
+- No fragile text parsing like "TOOL_CALL:" or regex hacks
+"""
+
+import json
 from typing import Any
 from openai import OpenAI
 from llm.base import BaseLLM
@@ -65,7 +77,7 @@ class OpenAILLM(BaseLLM):
 
     def inject_tool_result(self, tool_name: str, result: Any) -> None:
         self.history.append({
-            "role":    "tool",
-            "name":    tool_name,
-            "content": str(result),
+            "role": "tool",
+            "name": tool_name,
+            "content": json.dumps(result, indent=2),
         })

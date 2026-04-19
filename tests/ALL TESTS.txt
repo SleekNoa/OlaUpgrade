@@ -1,0 +1,104 @@
+# ==================== OLA AGENT TEST SUITE ====================
+
+$uri = "http://localhost:8000/v1/chat/completions"
+$headers = @{ "Content-Type" = "application/json" }
+
+# Toggle debug output
+$VerboseMode = $true
+
+function Invoke-Ola {
+    param(
+        [string]$Name,
+        [string]$Prompt
+    )
+
+    Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "🧪 TEST: $Name" -ForegroundColor Cyan
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+
+    if ($VerboseMode) {
+        Write-Host "📤 Prompt:" -ForegroundColor Yellow
+        Write-Host $Prompt
+    }
+
+    $body = @{
+        messages = @(
+            @{ role = "user"; content = $Prompt }
+        )
+        model = "ola-agent"
+    } | ConvertTo-Json -Depth 10
+
+    try {
+        $start = Get-Date
+
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers
+
+        $end = Get-Date
+        $duration = ($end - $start).TotalMilliseconds
+
+        $content = $response.choices[0].message.content
+
+        Write-Host "`n📥 Response:" -ForegroundColor Green
+        Write-Host $content
+
+        Write-Host "`n⏱ Time: $([math]::Round($duration, 2)) ms" -ForegroundColor DarkGray
+        Write-Host "✅ Status: SUCCESS" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "`n❌ ERROR:" -ForegroundColor Red
+        Write-Host $_.Exception.Message
+
+        if ($VerboseMode) {
+            Write-Host $_ | Format-List -Force
+        }
+    }
+}
+
+# ==================== TEST GROUPS ====================
+
+Write-Host "`n🚀 Starting Ola Agent Test Suite..." -ForegroundColor Magenta
+
+# ── 1. WEATHER ─────────────────────────────────────
+Invoke-Ola "Weather (Simple)" "What's the weather in Marion, IA?"
+Invoke-Ola "Weather (Alt phrasing)" "Temperature in Cedar Rapids right now?"
+
+# ── 2. GENERAL ─────────────────────────────────────
+Invoke-Ola "General Knowledge" "What is the capital of France?"
+Invoke-Ola "Reasoning" "Why is the sky blue?"
+
+# ── 3. NEWS ────────────────────────────────────────
+Invoke-Ola "AI News" "Latest news about artificial intelligence"
+Invoke-Ola "Tesla News" "Recent news on Tesla"
+Invoke-Ola "Edge Case (Vague)" "News about nothing"
+
+# ── 4. STOCKS / CRYPTO ─────────────────────────────
+Invoke-Ola "Stock (Single)" "AAPL stock price"
+Invoke-Ola "Stock (Multi)" "TSLA and BTC-USD price right now"
+Invoke-Ola "Crypto" "Ethereum price today"
+
+# ── 5. SEARCH ──────────────────────────────────────
+Invoke-Ola "Search (Tech)" "Best Python async libraries 2025"
+Invoke-Ola "Search (General)" "Who won the last Super Bowl?"
+
+# ── 6. TASK ALLOCATION ─────────────────────────────
+Invoke-Ola "Task Allocation" @'
+Allocate these tasks:
+T1: Database migration (requires db)
+T2: Network configuration (requires net)
+T3: Frontend redesign (requires ui)
+
+Agents:
+A1: skills [db, backend], capacity 2
+A2: skills [net, infra], capacity 1
+A3: skills [ui, design], capacity 3
+'@
+
+# ── 7. MULTI-INTENT (IMPORTANT FOR AGENT QUALITY) ──
+Invoke-Ola "Mixed Query" "What's the weather in Tokyo and latest news about OpenAI?"
+
+# ── 8. STRESS / EDGE CASES ─────────────────────────
+Invoke-Ola "Ambiguous" "Tell me something useful"
+Invoke-Ola "Tool Conflict" "Compare Tesla stock and recent Tesla news"
+Invoke-Ola "Empty-ish" "..."
+
+Write-Host "`n✅ All tests completed." -ForegroundColor Magenta

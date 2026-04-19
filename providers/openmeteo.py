@@ -74,35 +74,74 @@ def _split_us_city(city: str) -> tuple[str, str | None]:
 
 def _pick_best_result(results: list[dict], state_abbr: str | None) -> dict | None:
     """
-    Prefer an exact U.S. state match when the input included a state abbreviation.
-
-    Open-Meteo can return multiple fuzzy matches. This helps choose the intended city.
+    Pick the best geocoding result with strong preference for the requested state.
     """
     if not results:
+        log.info("No geocoding results to choose from")
         return None
+
     if not state_abbr:
+        log.info("No state provided, returning first result")
         return results[0]
 
     state_name = US_STATE_ABBR[state_abbr].lower()
+    state_abbr_lower = state_abbr.lower()
 
-    for result in results:
-        if result.get("country_code") == "US" and (result.get("admin1") or "").lower() == state_name:
-            return result
+    log.info("Scoring %d results for state '%s' (%s)", len(results), state_abbr, state_name)
 
-    for result in results:
-        if result.get("country_code") == "US":
-            return result
+    scored = []
+    for idx, r in enumerate(results, 1):
+        name = r.get("name", "Unknown")
+        admin1 = (r.get("admin1") or "").lower().strip()
+        pop = int(r.get("population") or 0)
 
-    return results[0]
+        score = 0
+
+        if r.get("country_code") == "US":
+            # Strong exact state match
+            if admin1 == state_name:
+                score += 40
+            elif state_abbr_lower in admin1 or state_name in admin1:
+                score += 20
+            # Bonus if state abbreviation appears in the city name
+            if state_abbr_lower in name.lower():
+                score += 12
+
+            # Penalty for wrong state
+            if admin1 and admin1 != state_name:
+                score -= 10
+
+            # Population bonus
+            score += min(pop / 8000, 15)
+
+        scored.append((score, -pop, idx, r))
+
+        # Detailed logging
+        log.info(
+            f"  [{idx:2d}] {name:18} | {admin1.title():15} | pop: {pop:7,} | score: {score:6.1f}"
+        )
+
+    # Sort: best score first, then highest population
+    scored.sort(key=lambda x: (-x[0], x[1], x[2]))
+
+    best = scored[0][3]
+    best_pop = best.get("population") or 0
+
+    log.info("→ WINNER: %s, %s (pop: %s, score: %.1f)",
+             best.get("name"), best.get("admin1"), f"{best_pop:,}", scored[0][0])
+
+    return best
 
 
 def _build_search_variants(city: str) -> list[tuple[str, dict, str | None]]:
-    """Build a few increasingly-specific geocoding strategies."""
+    """Build geocoding strategies optimized for Open-Meteo's quirks."""
     city_name, state_abbr = _split_us_city(city)
+
     variants: list[tuple[str, dict, str | None]] = [
+        # Best strategy: search only city name → Open-Meteo returns all matches including Iowa
         (
-            "original_query",
-            {"name": city, "count": 10, "language": "en", "format": "json"},
+            "city_only",
+            {"name": city_name, "count": 20, "language": "en", "format": "json"},
             state_abbr,
         ),
     ]
@@ -110,19 +149,16 @@ def _build_search_variants(city: str) -> list[tuple[str, dict, str | None]]:
     if state_abbr:
         state_name = US_STATE_ABBR[state_abbr]
         variants.extend([
+            # Try with full state name
             (
-                "us_filtered_city_only",
-                {"name": city_name, "count": 10, "language": "en", "format": "json", "countryCode": "US"},
+                "city_state_name",
+                {"name": f"{city_name}, {state_name}", "count": 10, "language": "en", "format": "json"},
                 state_abbr,
             ),
+            # Original query as last resort
             (
-                "expanded_state_name",
-                {"name": f"{city_name}, {state_name}", "count": 10, "language": "en", "format": "json", "countryCode": "US"},
-                state_abbr,
-            ),
-            (
-                "expanded_state_and_country",
-                {"name": f"{city_name}, {state_name}, United States", "count": 10, "language": "en", "format": "json", "countryCode": "US"},
+                "original_query",
+                {"name": city, "count": 10, "language": "en", "format": "json"},
                 state_abbr,
             ),
         ])
@@ -131,29 +167,35 @@ def _build_search_variants(city: str) -> list[tuple[str, dict, str | None]]:
 
 
 def _geocode_city(city: str) -> tuple[float, float] | None:
-    """
-    Resolve a city name to coordinates using a few fallback query forms.
-    """
+    """Resolve a city name to coordinates using multiple fallback strategies."""
     for label, params, state_abbr in _build_search_variants(city):
         log.info("Geocoding attempt '%s' for %s", label, city)
-        geo = httpx.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params=params,
-            timeout=10,
-        )
-        geo.raise_for_status()
-        payload = geo.json()
-        results = payload.get("results") or []
-        log.info("Geocoding attempt '%s' returned %s result(s)", label, len(results))
-        best = _pick_best_result(results, state_abbr)
-        if best:
-            log.info(
-                "Selected geocoding result: %s, %s, %s",
-                best.get("name"),
-                best.get("admin1"),
-                best.get("country_code"),
+
+        try:
+            geo = httpx.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params=params,
+                timeout=10,
             )
-            return best["latitude"], best["longitude"]
+            geo.raise_for_status()
+            payload = geo.json()
+            results = payload.get("results") or []
+
+            log.info("Geocoding attempt '%s' returned %s result(s)", label, len(results))
+
+            if results:
+                best = _pick_best_result(results, state_abbr)
+                if best:
+                    log.info(
+                        "Selected geocoding result: %s, %s, %s",
+                        best.get("name"),
+                        best.get("admin1"),
+                        best.get("country_code"),
+                    )
+                    return best["latitude"], best["longitude"]
+        except Exception as e:
+            log.warning("Geocoding attempt '%s' failed: %s", label, e)
+            continue
 
     log.warning("No geocoding match found for %s", city)
     return None
@@ -162,12 +204,6 @@ def _geocode_city(city: str) -> tuple[float, float] | None:
 def get_weather(city: str) -> WeatherResult | None:
     """
     Fetch current weather for a city.
-
-    Flow:
-    1. Geocode the city name to latitude/longitude.
-    2. Request current temperature + weather code.
-    3. Convert the weather code into readable text.
-    4. Return a WeatherResult, or None if anything fails.
     """
     try:
         coords = _geocode_city(city)
@@ -176,6 +212,7 @@ def get_weather(city: str) -> WeatherResult | None:
 
         lat, lon = coords
         log.info("Fetching forecast for coordinates (%s, %s)", lat, lon)
+
         wx = httpx.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
@@ -195,6 +232,5 @@ def get_weather(city: str) -> WeatherResult | None:
             conditions=WMO_CODES.get(current["weathercode"], f"Code {current['weathercode']}"),
         )
     except Exception:
-        # Log to stderr so we can diagnose the failure without corrupting MCP stdout.
         log.exception("Weather lookup failed for %s", city)
         return None

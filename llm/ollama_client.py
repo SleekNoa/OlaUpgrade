@@ -10,6 +10,7 @@ Important improvements over naive implementations:
 - No fragile text parsing like "TOOL_CALL:"
 """
 
+import json
 from typing import Any
 import ollama
 from llm.base import BaseLLM
@@ -48,15 +49,32 @@ class OllamaLLM(BaseLLM):
             kwargs["tools"] = tools
 
         response = ollama.chat(**kwargs)    # dict with role/content/tool_calls
-        assistant_msg = response["message"]
+        # Get the message object from the response
+        msg_obj = response["message"]
 
-        # Normalise None content (Ollama sometimes returns content: null)
-        if assistant_msg.get("content") is None:
-            assistant_msg["content"] = ""
+        # Normalise:# Convert Pydantic object to plain dict if needed (newer ollama SDK versions)
+        if hasattr(msg_obj, "model_dump"):
+            raw: dict = msg_obj.model_dump()    # Pydantic v2
+
+        elif hasattr(msg_obj, "dict"):
+            raw: dict = msg_obj.dict()  # Pydantic v1
+
+        elif isinstance(msg_obj, dict):
+            raw: dict = msg_obj
+        else:
+            raw: dict = {"role": "assistant", "content": str(msg_obj), "tool_calls": None}
+        assistant: dict[str, Any] = {
+            "role": "assistant",
+            "content": raw.get("content") or "",
+        }
+
+        tool_calls = raw.get("tool_calls")
+        if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
+            assistant["tool_calls"] = tool_calls
 
         # Save assistant response to history for context in next turn
-        self.history.append(assistant_msg)  # keep in context
-        return assistant_msg
+        self.history.append(assistant)
+        return assistant
 
     def inject_tool_result(self, tool_name: str, result: Any) -> None:
         """
@@ -66,7 +84,7 @@ class OllamaLLM(BaseLLM):
         self.history.append({
             "role": "tool",
             "name": tool_name,
-            "content": str(result),
+            "content": json.dumps(result, indent=2),
         })
 
 

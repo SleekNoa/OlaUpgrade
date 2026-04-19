@@ -1,0 +1,4 @@
+Get-ChildItem -Recurse -Filter *.py | ForEach-Object {
+    Write-Host "`n===== FILE: $($_.FullName) =====" -ForegroundColor Yellow
+    Get-Content -LiteralPath $_.FullName
+}

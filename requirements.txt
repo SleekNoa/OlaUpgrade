@@ -1,0 +1,28 @@
+# requirements.txt
+# Core dependencies for OLA Agent
+
+# LLM & API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
+python-dotenv>=1.0.1
+httpx>=0.27.0
+
+# LLM clients
+ollama>=0.4.0
+openai>=1.35.0
+
+# MCP (Model Context Protocol)
+mcp>=1.0.0
+
+# Providers
+yfinance>=0.2.40
+newsapi-python>=0.2.7
+duckduckgo-search>=6.3.0
+ddgs>=0.2.0                  # Modern DuckDuckGo client
+
+# Utilities
+curl_cffi>=0.7.0             # Required by yfinance for reliable Yahoo Finance access
+
+# Optional but recommended for development
+asyncio>=3.4.3
