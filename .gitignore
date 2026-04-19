@@ -1,0 +1,44 @@
+# =============================================
+# Environment variables - NEVER commit secrets!
+# =============================================
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+
+# Allow the template file (this is the one you DO commit)
+!.env.example
+
+# =============================================
+# Common Python / virtual environment ignores
+# =============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# =============================================
+# IDE / Editor files
+# =============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# =============================================
+# OS generated files
+# =============================================
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
