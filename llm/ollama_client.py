@@ -41,14 +41,18 @@ class OllamaLLM(BaseLLM):
         if not self.history and self.system_prompt:
             self.history.append({"role": "system", "content": self.system_prompt})
 
-        self.history.append({"role": "system", "content": user_message})
+        self.history.append({"role": "user", "content": user_message})
 
-        kwargs = dict[str, Any] = {"model": self.model, "messages": self.history}
+        kwargs: dict[str, Any] = {"model": self.model, "messages": self.history}
         if tools:
             kwargs["tools"] = tools
 
         response = ollama.chat(**kwargs)    # dict with role/content/tool_calls
         assistant_msg = response["message"]
+
+        # Normalise None content (Ollama sometimes returns content: null)
+        if assistant_msg.get("content") is None:
+            assistant_msg["content"] = ""
 
         # Save assistant response to history for context in next turn
         self.history.append(assistant_msg)  # keep in context

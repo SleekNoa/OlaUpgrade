@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: ola-upgrade
+Version: 0.1.0
+Summary: OLA Agent with MCP tools
+License: MIT
+Requires-Python: >=3.10

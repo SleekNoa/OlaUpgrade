@@ -7,6 +7,7 @@ Routes user queries to the most appropriate specialized agent.
 This gives us "least privilege" — each sub-agent only sees the tools it needs.
 """
 
+import os
 from tools.mcp_client import MCPClient
 from agent.base_agent import BaseAgent
 
@@ -40,12 +41,13 @@ class MultiAgentOrchestrator:
         kwargs = {"mcp": mcp, "provider": provider, "model": model}
 
         self.router = BaseAgent(
-            "Router", system_prompt=_ROUTER,
-            allowed_tools=[],  # router never calls tools
+            "Router",
+            system_prompt=ORCHESTRATOR_PROMPT,
+            allowed_tools=[],
             **kwargs,
         )
 
-        self.agents = dict[str, BaseAgent] = {
+        self.agents: dict[str, BaseAgent] = {
             "weather": BaseAgent(
                 name="WeatherAgent",
                 mcp=mcp,
@@ -71,15 +73,16 @@ class MultiAgentOrchestrator:
 
     async def run(self, user_input: str) -> str:
         # Step 1: Decide which agent should handle this
-        route = (await self.router.run(user_input)).lower().strip()
-        route = next((k for k in self.agents if k in route), "general")
+        route_raw = await self.router.run(user_input)
+
+        if not route_raw:
+            print("Router returned empty response → defaulting to 'general'")
+            route = "general"
+        else:
+            route_raw = route_raw.lower().strip()
+            route = next((k for k in self.agents if k in route_raw), "general")
 
         print(f"  → Routed to: {route}")
 
         # Step 2: Let the chosen specialist handle it
         return await self.agents[route].run(user_input)
-
-    def swap_model(self, model: str):
-        """Change the underlying model at runtime (used by API)."""
-        for agent in [self.router, *self.agents.values()]:
-            agent.llm.model = model

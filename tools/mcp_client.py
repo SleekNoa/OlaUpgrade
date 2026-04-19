@@ -13,10 +13,11 @@ This is the "shared tool layer" used by all agents.
 """
 
 import json
+import os
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
-from click import command
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -36,22 +37,32 @@ class MCPClient:
 
     async def __aenter__(self):
         """Start the MCP server and initialize session."""
-        params = StdioServerParameters(command="python", args=[self.server_script])
+        # Resolve project root so providers/ is always findable
+        project_root = str(Path(self.server_script).parent.parent.resolve())
+
+        print(f"Launching MCP server from project root: {project_root}")
+
+        # Build environment with PYTHONPATH pointing to project root
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(project_root) + os.pathsep + env.get("PYTHONPATH", "")
+
+        params = StdioServerParameters(
+            command="python",
+            args=[self.server_script],
+            cwd=str(project_root),
+            env=env,
+        )
 
         stdio_transport = await self._exit_stack.enter_async_context(
             stdio_client(params)
         )
         stdio, write = stdio_transport
-
         self.session = await self._exit_stack.enter_async_context(
             ClientSession(stdio, write)
         )
-
         await self.session.initialize()
-
         tools = (await self.session.list_tools()).tools
-        print(f" MCP connected - tools availiable: {[t.name for t in tools]}")
-
+        print(f"MCP ready - tools: {[t.name for t in tools]}")
         return self
 
     async def __aexit__(self, *exc):

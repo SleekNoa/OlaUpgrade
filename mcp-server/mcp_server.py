@@ -13,12 +13,17 @@ Key benefits:
 - Runs as a separate process (good isolation)
 """
 
+
+
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
+import sys
 import logging
+from typing import List, Optional
 from providers.openmeteo import get_weather as openmeteo_get_weather
+from utils.logging_config import configure_logging
 
-
+configure_logging()
 log = logging.getLogger("mcp-server")
 
 # Initialize the MCP server

@@ -44,6 +44,8 @@ class BaseAgent:
 
     async def _get_tools(self) -> list[dict]:
         all_tools = await self.mcp.ollama_tool_schemas()
+        if self.allowed_tools == []:
+            return []
         if self.allowed_tools is None:
             return all_tools
         return [t for t in all_tools if t["function"]["name"] in self.allowed_tools]
@@ -59,34 +61,44 @@ class BaseAgent:
         self.llm.reset()
         tools = await self._get_tools()
 
-        msg = self.llm.chat(user_input, tools=tools)
+        msg = self.llm.chat(user_input, tools=tools or None)
 
         for step in range(self.max_steps):
             tool_calls = msg.get("tool_calls")
+
             if not tool_calls:
-                break           # LLM gave a text answer / final answer
+                break  # Final answer from LLM
 
+            # Execute ALL tool calls first
             for tc in tool_calls:
-                fn = tc["function"]
-                name = fn["name"]
-                args = fn.get("arguments", {})
+                name = tc["function"]["name"]
+                args = self._parse_args(tc["function"].get("arguments", {}))
 
-                # Some models return arguments as JSON string
-                if isinstance(args, str):
-                    args = json.loads(args)
-
-                print(f" [{self.name} <-> {name}({args})")
+                print(f"  [{self.name}] <-> {name}({args})")
 
                 observation = await self.mcp.call_tool(name, args)
+
                 print(f"  [{self.name}] <0> {observation}")
 
                 self.llm.inject_tool_result(name, observation)
 
-                # Let the LLM reason over the new observations
-                msg = self.llm.chat(
-                    "Based on the tool results above, continue reasoning or give your final answer.",
-                tools=tools,
-                )
+            # THEN call LLM again (once per step)
+            msg = self.llm.chat(
+                "Based on the tool results above, give your final answer.",
+                tools=tools or None,
+            )
 
-            return msg.get("content", "").strip()
+        # Safe return
+        content = msg.get("content")
 
+        if not content:
+            print(f"{self.name} returned empty content")
+            return ""
+
+      # return content.strip()
+        final = (msg.get("content") or "").strip()
+
+        print(f"  [{self.name}] FINAL MSG:", msg)
+        print(f"  [{self.name}] FINAL TEXT:", final)
+
+        return final
